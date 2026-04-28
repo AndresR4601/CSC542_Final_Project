@@ -1,0 +1,356 @@
+---
+title: "SL_Proj"
+author: "Andrés Ramírez",
+        "Salome Collante-Ramirez",
+        "Ethan Marshall"
+date: "2026-03-01"
+output: html_document
+---
+
+## Libraries
+```{r}
+#Load libraries
+library(kknn)
+library(readr)
+library(dplyr)
+library(geosphere)
+library(terra)
+library(sf)
+library(boot)
+library(tree)
+library(MASS)
+library(randomForest)
+library(class)
+library(caret)
+library(pROC)
+```
+
+## Data Preprocessing
+```{r}
+# Open data
+data <- read_delim("apartments_for_rent_classified_100K.txt", delim = ";", show_col_types = FALSE)
+
+# Convert char to numeric 
+data$bathrooms = as.numeric(data$bathrooms)
+
+# Filter data for Florida
+data <- data[data$state == "FL", ]
+
+# Filter South FL cities
+south_florida_cities <- c(
+  # Palm Beach County
+  "West Palm Beach", "Lake Worth", "Boynton Beach", "Delray Beach",
+  "Boca Raton", "Wellington", "Palm Beach Gardens", "Jupiter",
+  
+  # Broward County
+  "Deerfield Beach", "Pompano Beach", "Fort Lauderdale", "Oakland Park",
+  "Wilton Manors", "Lauderhill", "Coral Springs", "Pembroke Pines",
+  "Miramar", "Davie", "Hollywood", "Hallandale", "Hallandale Beach",
+  "Dania", "Dania Beach", "Aventura",
+  
+  # Miami-Dade County
+  "North Miami", "North Miami Beach", "Opa Locka", "Hialeah", "Doral",
+  "Miami", "Miami Beach", "Coral Gables", "Key Biscayne", "Cutler Bay",
+  "Cutler Ridge", "Homestead", "Florida City",
+  
+  # Florida Keys
+  "Key West"
+)
+
+# Filter data by South Florida city
+data <- data[data$cityname %in% south_florida_cities, ]
+```
+
+# New column - distance in miles to campus
+```{r}
+# Distance to campus
+campus_loc <- c(-80.27813, 25.717396)
+
+data$distance_miles <- distHaversine(cbind(data$longitude, data$latitude), campus_loc)
+data$distance_miles <- data$distance_miles * 0.000621371
+```
+
+```{r}
+# Make amenities a numeric value
+data$amenities <- ifelse( is.na(data$amenities) | data$amenities == "",
+  0, sapply(strsplit(data$amenities, ","), length)
+)
+```
+
+# Remove unused columns
+```{r}
+data <- data[, c("amenities", "bathrooms", "bedrooms", "longitude", "latitude","square_feet", "distance_miles", "price")]
+```
+
+
+# Null values
+```{r}
+# Count NA values per column
+colSums(is.na(data))
+
+# Drop rows with NA values
+data <- na.omit(data)
+```
+
+# New column - Value categories as factor
+```{r}
+# Add value categories for classification model
+
+# Normalize each variable to 0-1 scale
+data$price_norm     <- (data$price - min(data$price)) / (max(data$price) - min(data$price))
+data$amenities_norm <- (data$amenities - min(data$amenities)) / (max(data$amenities) - min(data$amenities))
+data$sqft_norm      <- (data$square_feet - min(data$square_feet)) / (max(data$square_feet) - min(data$square_feet))
+data$bed_norm       <- (data$bedrooms - min(data$bedrooms)) / (max(data$bedrooms) - min(data$bedrooms))
+data$bath_norm      <- (data$bathrooms - min(data$bathrooms)) / (max(data$bathrooms) - min(data$bathrooms))
+
+# Weighted so price counts more heavily against the score
+data$value_score <- (data$amenities_norm * 0.20 +
+                     data$sqft_norm      * 0.40 +
+                     data$bed_norm       * 0.20 +
+                     data$bath_norm      * 0.20) - data$price_norm
+
+# Classify based on score distribution
+data$value_category <- cut(
+  data$value_score,
+  breaks = quantile(data$value_score, probs = c(0, 0.33, 0.67, 1)),
+  labels = c("Expensive", "Standard", "Cheap"),
+  include.lowest = TRUE
+)
+
+# Convert to factor
+data$value_category <- factor(data$value_category, levels = c("Expensive", "Standard", "Cheap"))
+
+data <- data[, c("amenities", "bathrooms", "bedrooms", "longitude", "latitude","square_feet", "distance_miles", "value_category")]
+```
+
+
+# Data Analysis
+```{r}
+# Class balance
+summary(data)
+```
+
+```{r}
+cor(data[1:7])
+```
+
+```{r}
+plot(data)
+```
+
+
+## Classification
+
+# Data splitting
+```{r}
+train_index <- createDataPartition(data$value_category, p = 0.8, list = FALSE)
+
+train <- data[train_index, ]
+test  <- data[-train_index, ]
+
+set.seed(123)
+```
+
+# Models
+```{r}
+# LDA
+lda.fit <- lda(value_category ~ . + square_feet*longitude + square_feet*latitude + log(square_feet), data = train, method = "mve")
+
+lda.pred <- predict(lda.fit, newdata = test)
+train.pred <- predict(lda.fit ,newdata = train)
+
+# Confusion matrix
+table(lda.pred$class, test$value_category)
+
+# Accuracy score
+lda_train_acc <- mean(train.pred$class == train$value_category)
+lda_test_acc <- mean(lda.pred$class == test$value_category)
+
+# AUC score
+lda_test_roc <-multiclass.roc(test$value_category, lda.pred$posterior)
+lda_test_auc <- auc(lda_test_roc)
+
+cat('Train accuracy: ', lda_train_acc, "\n")
+cat('Test accuracy: ', lda_test_acc, "\n")
+cat('Test AUC: ', lda_test_auc)
+```
+
+
+```{r}
+# KNN = 1
+train_knn = train[,c("amenities", "bathrooms", "bedrooms", "longitude", 
+                         "latitude", "square_feet", "distance_miles", 
+                         "value_category")]
+
+test_knn = test[,c("amenities", "bathrooms", "bedrooms", "longitude", 
+                         "latitude", "square_feet", "distance_miles")]
+
+knn.pred = kknn(value_category~ ., train=train_knn, test=test_knn, k=1, scale=T, kernel="gaussian")
+train.pred = kknn(value_category~ ., train=train_knn, test=train_knn[, -ncol(train_knn)], k=1, scale=T, kernel="gaussian")
+
+# Confusion matrix
+fit.train.pred <- fitted(train.pred )
+fit.knn.pred <- fitted(knn.pred)
+table(fit.knn.pred, test$value_category)
+
+# Accuracy score
+knn_train_acc <- mean(fit.train.pred == train$value_category)
+knn_test_acc <- mean(fit.knn.pred == test$value_category)
+
+# AUC score
+knn.pred.auc = kknn(value_category~ ., train=train_knn, test=test_knn, k=1, scale=T, kernel="gaussian")
+knn.prob.auc <- knn.pred.auc$prob  
+knn.test.roc <- multiclass.roc(test$value_category, knn.prob.auc)
+knn_test_auc <- auc(knn.test.roc)
+
+cat('Train accuracy: ', knn_train_acc, "\n")
+cat('Test accuracy: ', knn_test_acc, "\n")
+cat('Test AUC: ', knn_test_auc, "\n")
+
+# K = 11
+knn.11.pred = kknn(value_category~ ., train=train_knn, test=test_knn, k=11, scale=T, kernel="gaussian")
+train.11.pred = kknn(value_category~ ., train=train_knn, test=train_knn[, -ncol(train_knn)], k=11, scale=T, kernel="gaussian")
+
+# Confusion matrix
+fit.train.11.pred  <- fitted(train.11.pred  )
+fit.knn.11.pred <- fitted(knn.11.pred)
+table(fit.knn.11.pred, test$value_category)
+
+# Accuracy score
+knn11_train_acc <- mean(fit.train.11.pred == train$value_category)
+knn11_test_acc <- mean(fit.knn.11.pred == test$value_category)
+
+# AUC score
+knn11.pred.auc = kknn(value_category~ ., train=train_knn, test=test_knn, k=11, scale=T, kernel="gaussian")
+knn11.prob.auc <- knn11.pred.auc$prob 
+knn11.test.roc <- multiclass.roc(test$value_category, knn11.prob.auc)
+knn11_test_auc <- auc(knn11.test.roc)
+
+cat('Train k = 11 accuracy: ', knn11_train_acc, "\n")
+cat('Test k = 11 accuracy: ', knn11_test_acc, "\n")
+cat('Test k = 11 AUC: ', knn11_test_auc, "\n")
+```
+
+```{r}
+# Random Forest m=sqrt(p)
+rf_model <- randomForest(value_category ~ ., data = train, mtry = sqrt(7), importance=T, ntree=300)
+yhat.rf <- predict(rf_model ,newdata = test)
+train.rf <- predict(rf_model ,newdata = train)
+
+# Confusion matrix
+table(yhat.rf, test$value_category)
+
+# Accuracy score
+rf_train_acc <- mean(train.rf == train$value_category)
+rf_test_acc <- mean(yhat.rf == test$value_category)
+
+# AUC score
+yhat.rf.auc <- predict(rf_model ,newdata = test, type = 'prob')
+rf_test_roc <- multiclass.roc(test$value_category, yhat.rf.auc)
+rf_test_auc <- auc(rf_test_roc)
+
+cat('Train accuracy: ', rf_train_acc, "\n")
+cat('Test accuracy: ', rf_test_acc, "\n")
+cat('AUC score:', rf_test_auc)
+```
+
+## Cross-Validation
+```{r}
+k = 10
+folds = sample(1:k, nrow(train), replace = TRUE)
+cv.errors = matrix(NA, k, 3, dimnames = list(NULL, c("LDA", "KNN", "RF")))
+
+for (j in 1:k) {
+  
+  cv.train.df = train[folds != j, ]
+  cv.test.df  = train[folds == j, ]
+  cv.test.y   = train$value_category[folds == j]
+  
+  # LDA
+  lda.cv      = lda(value_category ~., data = cv.train.df)
+  lda.cv.pred = predict(lda.cv, cv.test.df)$class
+  cv.errors[j, "LDA"] = mean(lda.cv.pred == cv.test.df$value_category)
+  
+  cv.train.knn = cv.train.df[, c("amenities", "bathrooms", "bedrooms", "longitude",
+                                  "latitude", "square_feet", "distance_miles",
+                                  "value_category")]
+  cv.test.knn  = cv.test.df[,  c("amenities", "bathrooms", "bedrooms", "longitude",
+                                  "latitude", "square_feet", "distance_miles")]
+  
+  knn.cv = kknn(value_category ~ .,
+                train  = cv.train.knn,
+                test   = cv.test.knn,
+                k      = 11,
+                scale  = TRUE,
+                kernel = "gaussian")
+  
+  cv.errors[j, "KNN"] = mean(fitted(knn.cv) == cv.test.y) 
+  
+  rf.cv      = randomForest(value_category ~., data = cv.train.df, 
+                             mtry = round(sqrt(7)),           
+                             importance = TRUE)
+  rf.cv.pred = predict(rf.cv, newdata = cv.test.df)
+  cv.errors[j, "RF"] = mean(rf.cv.pred == cv.test.df$value_category)
+}
+
+mean.cv.errors = apply(cv.errors, 2, mean)
+mean.cv.errors
+```
+
+```{r}
+# Model names
+models <- c("LDA", "KNN_1", "KNN_11", "RF")
+
+# Training accuracy
+train_acc <- c(lda_train_acc, knn_train_acc, knn11_train_acc, rf_train_acc)
+
+# Test accuracy
+test_acc <- c(lda_test_acc, knn_test_acc, knn11_test_acc, rf_test_acc)
+
+# Mean 10-fold CV 
+fold10 <- c(mean.cv.errors["LDA"], mean.cv.errors["KNN"], mean.cv.errors["KNN"], mean.cv.errors["RF"])
+
+# AUC scores
+auc_val <- c(lda_test_auc, knn_test_auc, knn11_test_auc, rf_test_auc)
+
+summary_table <- data.frame(
+  Model = models,
+  Train_Acc = train_acc,
+  Test_Acc = test_acc,
+  Fold10 = fold10,
+  AUC = auc_val
+)
+
+print(summary_table)
+```
+
+```{r}
+#ROC Curve
+plot.roc(roc(test$value_category, lda.pred$posterior[,3]), col="blue", main="Luxury vs all ROC")
+lines.roc(roc(test$value_category, knn.prob.auc[,3]), col="red")
+lines.roc(roc(test$value_category, knn11.prob.auc[,3]), col="yellow")
+lines.roc(roc(test$value_category, yhat.rf.auc[,3]), col="green")
+
+legend("bottomright", legend=c("LDA","KNN k=1", "KNN k=11","Random Forest"),
+       col=c("blue","red","yellow","green"), lwd=2)
+```
+
+## Projection
+```{r}
+img <- rast("SF_Map.png")
+img <- flip(img, direction = "vertical")
+ext(img) <- c(-82.325, -79.7, 24.495, 26.8)
+crs(img) <- "EPSG:4326"  
+
+houses_sf <- st_as_sf(
+  data,
+  coords = c("longitude", "latitude"),
+  crs = 4326
+)
+
+plotRGB(img, r = 1, g = 2, b = 3, stretch = "lin",
+        main = "Housing Locations — South Florida")
+
+plot(houses_sf, add = TRUE, col = "red", pch = 16, cex = 0.3)
+```
+
