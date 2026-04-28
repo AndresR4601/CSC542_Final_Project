@@ -1,5 +1,10 @@
 # CSC542_Final_Project
+# Student Housing Rent Price Tiers Classification Model
 
+## Overview
+A multi-class classification project that sorts South Florida rentals into Cheap, Standard, and Luxury tiers, built to help UM students find housing that fits their budget without needing to know the local market
+Rather than tier listings on raw price alone, this project uses a value_score that weighs bathrooms, bedrooms, square footage, and amenities against price, so a "Cheap" listing means a good deal, not just a low number. The same tier system is applied across two datasets: 769 South Florida rental listings from UCI and 1,219 Florida student rent records from IPUMS USA, letting the housing market and student demand side speak the same language.
+LDA, KNN (k=1 and k=11), and Random Forest were trained and evaluated using an 80/20 split, 10-fold cross-validation, and one-vs-all ROC curves.
 
 ## **Files:**         
 Found on the /docs folder both the presentantion .pptx and the report .pdf      
