@@ -1,0 +1,411 @@
+---
+title: "Student Budget Analysis"
+author: "Salome Collante Ramirez, Andrés Ramírez, Ethan Marshall"
+date: "2026-03-05"
+output: pdf_document
+---
+# Overview
+
+This notebook analyzes monthly rent payments reported by college students in South Florida using 2024 American Community Survey microdata (IPUMS USA). The goal is to understand what student housing budgets look like across Miami-Dade, Broward, and Palm Beach counties, and to classify students into three budget tiers (Cheap, Standard, and Luxury) based on their reported rent.
+
+The resulting `price_category` label will serve as a join key connecting this dataset to a separate housing_data, enabling analysis of what housing options are realistically available at each budget level.
+
+---
+
+# Data
+
+### About Data:
+
+Loading Data
+```{r loading data}
+rm(list = ls())
+
+# Working  Directory
+setwd("~/Stats/Project - Housing/Final Drafts - Student Housing")
+
+# Data
+student_data = read.csv('Student_Budget.csv')
+
+student_data$grade_level = ifelse(student_data$grade_level == 15, "Undergraduate", "Graduate")
+```
+
+Missing Values
+```{r Missing Values}
+colSums(is.na(student_data))
+```
+
+### Descriptive information:
+```{r Descriptive Info}
+names(student_data)
+head(student_data)
+summary(student_data)
+dim(student_data)
+```
+Determining outliers
+
+```{r}
+# Boxplot with individual points
+boxplot(student_data$rent,
+        main = "Rent Distribution with Outliers",
+        ylab = "Monthly Rent ($)",
+        col  = "#2E75B6",
+        border = "black",
+        outline = FALSE,   # hides default outlier dots so we can color them manually
+        ylim = c(0, 9000))   # extend to show the 8200 values
+
+# All points
+stripchart(student_data$rent, 
+           vertical = TRUE, 
+           method = "jitter",
+           add = TRUE, 
+           pch = 20, 
+           col = rgb(0,0,0,0.2))
+
+# Highlight the two extreme values in red
+outlier_vals = student_data$rent[student_data$rent == 4 | student_data$rent == 8200]
+stripchart(outlier_vals, 
+           vertical = TRUE, 
+           add = TRUE, 
+           pch = 20, 
+           col = "red",
+           cex = 1.5)
+```
+
+```{r}
+student_data = student_data[student_data$rent > 4 & student_data$rent < 5000, ]
+cat("Rows remaining:", nrow(student_data))
+
+attach(student_data)
+```
+
+Removed 11 observations with rent values below $10 or above $5,000, as these values are clearly separated from the rest of the distribution with no observations between $4,800 and $8,200.
+
+### Descriptive Analysis:
+Distribution of monthly rent across all students.
+```{r rent distribution}
+# Histogram- Rent Dist.
+hist(rent,
+     main = "Distribution of Monthly Rent - South Florida Students",
+     xlab = "Monthly Rent ($)",
+     col  = "#2E75B6",
+     border = "white",
+     breaks = 30,
+     xlim = c(0, 5000))
+abline(v =median(rent),col = "red",lwd = 2,lty=2)
+legend("topright",legend=paste("Median: $",median(rent)),col= "red",lty = 2,lwd = 2)
+```
+
+Rent by county.
+```{r rent by county}
+# Box Plot- Rent by county
+boxplot(rent ~ county,
+        data = student_data,
+        main = "Monthly Rent by County",
+        xlab = "County",
+        ylab = "Monthly Rent ($)",
+        col  = c("#2E75B6", "#70AD47", "#ED7D31"))
+```
+
+Rent by grade level (Undergraduate | Graduate).
+```{r rent by grade level}
+# Boxplot- Rent by grade level
+boxplot(rent ~ grade_level,
+        data = student_data,
+        main = "Monthly Rent by Grade Level",
+        xlab = "Grade Level",
+        ylab = "Monthly Rent ($)",
+        col  = c("#2E75B6", "#ED7D31"))
+```
+
+Summary statistics by (1)county, (2)grade level.
+```{r summary by county}
+tapply(rent, county, summary)
+tapply(rent, grade_level, summary)
+```
+
+### Budget Tier Assignment:
+
+Students are classified into three budget tiers based on their monthly rent.
+
+| Tier | Rent Range | Description |
+|------|------------|-------------|
+| Cheap | \$0 – \$1,600 | Shared housing, budget apartments |
+| Standard | \$1,601 – \$2,000 | Mid-range apartments |
+| Luxury | \$2,001+ | High-end or solo units |
+
+```{r price category}
+student_data$price_category = cut(
+  student_data$rent,
+  breaks = c(0, 1600, 2000, 5000),
+  labels = c("Cheap", "Standard", "Luxury")
+)
+
+summary(student_data$price_category)
+```
+
+Distribution of budget tiers.
+```{r tier distribution}
+counts = table(student_data$price_category)
+barplot(counts,
+        main = "Student Budget Tier Distribution",
+        xlab = "Budget Tier",
+        ylab = "Number of Students",
+        col  = c("#2E75B6", "#70AD47", "#ED7D31"),
+        border = "white")
+```
+
+Tier breakdown by county.
+```{r tier by county}
+table(student_data$county,student_data$price_category)
+```
+
+Tier breakdown by grade level.
+```{r tier by grade level}
+table(student_data$grade_level,student_data$price_category)
+```
+
+### Data Preparation for Modeling:
+```{r data preparation}
+# Using age, and county as predictors
+data_class = student_data[, c("rent","age","county","price_category")]
+data_class$county =  as.factor(data_class$county)
+data_class$price_category =  as.factor(data_class$price_category)
+
+data_class = na.omit(data_class)
+
+dim(data_class)
+```
+
+### Train / Test Split:
+```{r train/test split}
+set.seed(1)
+
+# 80% of observations for training
+num_samples = nrow(data_class)
+train = sample(num_samples,num_samples * 0.8)
+
+dim(data_class[train, ])
+dim(data_class[-train, ])
+```
+
+```{r scale}
+x = model.matrix(price_category ~.,data=data_class)[, -1]
+train.x = x[train, ]
+test.x = x[-train, ]
+
+# Standardize variables (mean=0, sd=1)
+train.x = scale(train.x)
+test.x = scale(test.x,
+               center = attr(train.x,"scaled:center"),
+               scale  = attr(train.x,"scaled:scale"))
+
+# Replace NaN from zero-variance columns with 0
+train.x[is.nan(train.x)] = 0
+test.x[is.nan(test.x)] = 0
+
+train.y = data_class$price_category[train]
+test.y = data_class$price_category[-train]
+```
+
+### 10-Fold Cross Validation:
+```{r 10 fold cv, message=F}
+library(class)
+library(MASS)
+library(randomForest)
+library(pROC)
+
+k = 10
+set.seed(1)
+
+# Vector that allocates each observation to one of k = 10 folds
+folds = sample(1:k, nrow(data_class[train, ]), replace = TRUE)
+
+# Matrix for results
+cv.errors = matrix(NA,k,3,dimnames=list(NULL, c("LDA", "KNN", "RF")))
+
+
+for (j in 1:k) {
+
+  # KNN
+  cv.train.x = train.x[folds != j, ]
+  cv.test.x  = train.x[folds == j, ]
+  cv.train.y = train.y[folds != j]
+  cv.test.y  = train.y[folds == j]
+
+  knn.cv = knn(cv.train.x,cv.test.x,cl=cv.train.y,k = 5)
+  cv.errors[j, "KNN"]=mean(knn.cv==cv.test.y)
+
+  # LDA
+  cv.train.df = data_class[train, ][folds != j, ]
+  cv.test.df  = data_class[train, ][folds == j, ]
+
+  lda.cv = lda(price_category ~.,data=cv.train.df)
+  lda.cv.pred = predict(lda.cv,cv.test.df)$class
+  cv.errors[j,"LDA"] = mean(lda.cv.pred==cv.test.y)
+
+  # Random Forest
+  rf.cv = randomForest(price_category ~.,data=cv.train.df,ntree=500)
+  rf.cv.pred = predict(rf.cv,newdata=cv.test.df)
+  cv.errors[j,"RF"] = mean(rf.cv.pred==cv.test.y)
+}
+
+# Average over columns
+mean.cv.errors = apply(cv.errors,2,mean)
+mean.cv.errors
+```
+
+### KNN:
+```{r knn}
+# KNN = 1
+knn.pred = knn(train.x, test.x, train.y, k=1)
+train.knn.pred = knn(train.x, train.x, train.y, k=1)
+
+# Confusion matrix
+conf_matrix = table(knn.pred,test.y)
+print(conf_matrix)
+
+# Accuracy score
+knn_train_acc = mean(train.knn.pred == train.y)
+knn_test_acc = mean(knn.pred == test.y)
+
+# AUC score
+knn.pred.auc = knn(train.x, test.x, train.y, k=1, prob=TRUE)
+knn.prob.auc = attr(knn.pred.auc, "prob")
+knn.test.roc = multiclass.roc(test.y, knn.prob.auc)
+knn_test_auc = auc(knn.test.roc)
+
+cat('Train accuracy: ', knn_train_acc, "\n")
+cat('Test accuracy: ', knn_test_acc, "\n")
+cat('Test AUC: ', knn_test_auc, "\n")
+
+# K = 11
+knn.11.pred = knn(train.x, test.x, train.y, k=11)
+train.11.pred = knn(train.x, train.x, train.y, k=11)
+
+# Confusion matrix
+conf_matrix = table(knn.11.pred,test.y)
+print(conf_matrix)
+
+# Accuracy score
+knn11_train_acc = mean(train.11.pred == train.y)
+knn11_test_acc = mean(knn.11.pred == test.y)
+
+# AUC score
+knn11.pred.auc = knn(train.x, test.x, train.y, k=11, prob=TRUE)
+knn11.prob.auc = attr(knn11.pred.auc, "prob")
+knn11.test.roc = multiclass.roc(test.y, knn11.prob.auc)
+knn11_test_auc = auc(knn11.test.roc)
+
+cat('Train k = 11 accuracy: ', knn11_train_acc, "\n")
+cat('Test k = 11 accuracy: ', knn11_test_acc, "\n")
+cat('Test k = 11 AUC: ', knn11_test_auc, "\n")
+```
+
+### LDA:
+```{r lda}
+lda.fit = lda(price_category ~.,data=data_class,subset=train)
+lda.pred = predict(lda.fit, data_class[-train, ])
+train.pred = predict(lda.fit, data_class[train, ])
+
+# Confusion matrix
+conf_matrix = table(lda.pred$class, test.y)
+print(conf_matrix)
+
+# Accuracy score
+lda_train_acc = mean(train.pred$class == train.y)
+lda_test_acc = mean(lda.pred$class == test.y)
+
+# AUC score
+lda_test_roc = multiclass.roc(test.y, lda.pred$posterior)
+lda_test_auc = auc(lda_test_roc)
+
+cat('Train accuracy: ', lda_train_acc, "\n")
+cat('Test accuracy: ', lda_test_acc, "\n")
+cat('Test AUC: ', lda_test_auc)
+```
+
+### Random Forest:
+```{r random forest}
+set.seed(1)
+rf.fit = randomForest(price_category ~.,data=data_class,subset=train,ntree=500,importance=T)
+yhat.rf = predict(rf.fit, newdata=data_class[-train, ])
+train.rf = predict(rf.fit, newdata=data_class[train, ])
+
+# Confusion matrix
+conf_matrix = table(yhat.rf, test.y)
+print(conf_matrix)
+
+# Accuracy score
+rf_train_acc = mean(train.rf == train.y)
+rf_test_acc = mean(yhat.rf == test.y)
+
+# AUC score
+yhat.rf.auc = predict(rf.fit, newdata=data_class[-train, ], type='prob')
+rf_test_roc = multiclass.roc(test.y, yhat.rf.auc)
+rf_test_auc = auc(rf_test_roc)
+
+cat('Train accuracy: ', rf_train_acc, "\n")
+cat('Test accuracy: ', rf_test_acc, "\n")
+cat('AUC score:', rf_test_auc)
+```
+
+Variable Importance
+```{r variable importance}
+importance(rf.fit)
+varImpPlot(rf.fit)
+```
+
+### Model Comparison Summary:
+```{r model comparison}
+# Model names
+models = c("LDA", "KNN_1", "KNN_11", "RF")
+
+# Training accuracy
+train_acc = c(lda_train_acc, knn_train_acc, knn11_train_acc, rf_train_acc)
+
+# Test accuracy
+test_acc = c(lda_test_acc, knn_test_acc, knn11_test_acc, rf_test_acc)
+
+# Mean 10-fold CV 
+fold10 = c(mean.cv.errors["LDA"], mean.cv.errors["KNN"], mean.cv.errors["KNN"], mean.cv.errors["RF"])
+
+# AUC scores
+auc_val = c(lda_test_auc, knn_test_auc, knn11_test_auc, rf_test_auc)
+
+summary_table = data.frame(
+  Model = models,
+  Train_Acc = train_acc,
+  Test_Acc = test_acc,
+  Fold10 = fold10,
+  AUC = auc_val
+)
+
+print(summary_table)
+```
+
+Our ROC results were:
+```{r roc curves, warning=FALSE}
+# Cheap vs all ROC
+plot.roc(roc(test.y, lda.pred$posterior[,1]), col="blue", main="CHEAP vs all ROC")
+lines.roc(roc(test.y, knn.test.roc$rocs[[1]]$original.predictor), col="red")
+lines.roc(roc(test.y, knn11.test.roc$rocs[[1]]$original.predictor), col="yellow")
+lines.roc(roc(test.y, yhat.rf.auc[,1]), col="green")
+legend("bottomright", legend=c("LDA","KNN k=1", "KNN k=11","Random Forest"),
+       col=c("blue","red","yellow","green"), lwd=2)
+
+# Standard vs all ROC
+plot.roc(roc(test.y, lda.pred$posterior[,2]), col="blue", main="Standard vs all ROC")
+lines.roc(roc(test.y, knn.test.roc$rocs[[2]]$original.predictor), col="red")
+lines.roc(roc(test.y, knn11.test.roc$rocs[[2]]$original.predictor), col="yellow")
+lines.roc(roc(test.y, yhat.rf.auc[,2]), col="green")
+legend("bottomright", legend=c("LDA","KNN k=1", "KNN k=11","Random Forest"),
+       col=c("blue","red","yellow","green"), lwd=2)
+
+# Luxury vs all ROC
+plot.roc(roc(test.y, lda.pred$posterior[,3]), col="blue", main="Luxury vs all ROC")
+lines.roc(roc(test.y, knn.test.roc$rocs[[3]]$original.predictor), col="red")
+lines.roc(roc(test.y, knn11.test.roc$rocs[[3]]$original.predictor), col="yellow")
+lines.roc(roc(test.y, yhat.rf.auc[,3]), col="green")
+legend("bottomright", legend=c("LDA","KNN k=1", "KNN k=11","Random Forest"),
+       col=c("blue","red","yellow","green"), lwd=2)
+```
