@@ -17,6 +17,8 @@ Found on the /docs folder both the presentantion .pptx and the report .pdf
 ## **Model B:**       
 *Dataset*                  
 - Found in the /data folder "Student_Budget.csv"
+- /Student_Preprocessing folder has files from which the "Student_Budget.csv" was extracted
 
 *Code*     
-- Found in the /src folder "Student_Budget_Data_Analysis.Rmd"         
+- Found in the /src folder "Student_Budget_Data_Analysis.Rmd"
+- Includes a .pdf with the outputs       
